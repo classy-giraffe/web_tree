@@ -221,7 +221,6 @@ impl WebTree {
             node.depth
         );
 
-        // Print children
         for neighbor in self.graph.neighbors(idx) {
             self.print_node(neighbor, indent + 1);
         }
@@ -243,7 +242,6 @@ impl WebTree {
             web_tree.start_url.clone()
         };
         
-        // Kick off recursive concurrent crawl
         WebTree::crawl_url_concurrent(crawler.clone(), start_url, 0, None).await?;
         
         let stats = {
@@ -275,7 +273,7 @@ impl WebTree {
         depth: usize,
         parent_idx: Option<NodeIndex>,
     ) -> Result<()> {
-        // 1) Normalize & register under lock
+        // 1) URL normalization and graph node creation
         let (normalized, current_idx) = {
             let mut guard = crawler.lock().await;
             
@@ -378,7 +376,7 @@ impl WebTree {
         // 5) Drive them to completion
         while let Some(child_result) = tasks.next().await {
             if let Err(e) = child_result {
-                // Log but don't propagate child crawl errors to avoid failing the entire crawl
+                // We just log the error, as we don't want to stop the entire crawl
                 warn!(error = %e, "Error in child crawl");
             }
         }
