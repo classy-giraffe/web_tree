@@ -273,8 +273,8 @@ impl WebTree {
         depth: usize,
         parent_idx: Option<NodeIndex>,
     ) -> Result<()> {
-        // 1) URL normalization and graph node creation
-        let (normalized, current_idx) = {
+        // 1) URL normalization and graph node/edge creation
+        let (normalized, current_idx, already_visited) = {
             let mut guard = crawler.lock().await;
             
             let norm = match guard.normalize_url(&url) {
@@ -287,17 +287,65 @@ impl WebTree {
             
             if depth > guard.max_depth {
                 debug!("Reached maximum depth, not crawling further");
+                
+                // Even if we've reached max depth, we should still add this URL as a node
+                // and create the edge from parent to this node
+                if let Some(parent) = parent_idx {
+                    // Check if this URL is already in our graph
+                    let idx = match guard.url_to_node.get(&norm) {
+                        Some(&i) => i,
+                        None => {
+                            // Add node for this URL even though we won't crawl it
+                            let i = guard.graph.add_node(LinkNode {
+                                url: norm.clone(),
+                                depth,
+                            });
+                            guard.url_to_node.insert(norm.clone(), i);
+                            i
+                        }
+                    };
+                    
+                    // Add an edge from parent to this URL
+                    guard.graph.add_edge(parent, idx, ());
+                    trace!(from = %guard.graph[parent].url, to = %norm, "Adding edge to max-depth URL");
+                }
+                
                 return Ok(());
             }
             
-            if guard.visited.contains(&norm) {
-                trace!("Already visited, skipping");
-                return Ok(());
+            // Check if URL has already been visited
+            let already_visited = guard.visited.contains(&norm);
+            
+            // Always add an edge from parent to this URL if parent exists
+            if let Some(parent) = parent_idx {
+                // Get or create node for this URL
+                let idx = match guard.url_to_node.get(&norm) {
+                    Some(&i) => i,
+                    None => {
+                        let i = guard.graph.add_node(LinkNode {
+                            url: norm.clone(),
+                            depth,
+                        });
+                        guard.url_to_node.insert(norm.clone(), i);
+                        i
+                    }
+                };
+                
+                // Add edge regardless of whether URL was already visited
+                guard.graph.add_edge(parent, idx, ());
+                trace!(from = %guard.graph[parent].url, to = %norm, "Adding edge");
+                
+                // Return early if already visited - we've added the edge but don't need to crawl
+                if already_visited {
+                    trace!(url = %norm, "Already visited, added edge but skipping crawl");
+                    return Ok(());
+                }
             }
             
+            // Mark as visited and prepare to crawl if we get here
             guard.visited.insert(norm.clone());
-            debug!(url = %norm, depth = depth, "Crawling page");
-
+            
+            // If no parent, create node for starting URL if needed
             let idx = match guard.url_to_node.get(&norm) {
                 Some(&i) => i,
                 None => {
@@ -310,13 +358,14 @@ impl WebTree {
                 }
             };
             
-            if let Some(parent) = parent_idx {
-                guard.graph.add_edge(parent, idx, ());
-                trace!(from = %guard.graph[parent].url, to = %norm, "Adding edge");
-            }
-            
-            (norm, idx)
+            debug!(url = %norm, depth = depth, "Crawling page");
+            (norm, idx, already_visited)
         };
+        
+        // If already visited, we've added the edge but won't crawl
+        if already_visited {
+            return Ok(());
+        }
 
         // 2) Fetch & parse outside lock
         let client = crawler.lock().await.client.clone();
