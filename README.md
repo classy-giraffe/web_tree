@@ -13,6 +13,8 @@ WebTree is a command-line tool that crawls websites starting from a specified UR
 - **Domain Filtering**: Restrict crawling to specific domains or subdomains
 - **GraphViz Export**: Generate DOT files with properly labeled nodes for visualization
 - **User-Friendly CLI**: Simple command-line interface with reasonable defaults
+- **Robust Error Handling**: Comprehensive error handling with custom error types
+- **Detailed Logging**: Structured logging with tracing for better diagnostics
 
 ## Installation
 
@@ -69,6 +71,24 @@ web_tree --url https://example.com --filters example.com,api.example.com
 | `--output` | `-o` | Output file path for GraphViz DOT file | webtree.dot |
 | `--filters` | `-f` | Comma-separated list of domain filters | (none) |
 
+### Logging Control
+
+WebTree uses the `tracing` crate for structured logging. You can control the log level using the `RUST_LOG` environment variable:
+
+```bash
+# Show only info and higher level logs
+RUST_LOG=info web_tree
+
+# Show debug logs
+RUST_LOG=debug web_tree
+
+# Show all logs including trace level
+RUST_LOG=trace web_tree
+
+# Target specific modules
+RUST_LOG=web_tree=debug,web_tree::crawler=trace web_tree
+```
+
 ## Visualizing the Output
 
 After running the crawler, you can visualize the generated DOT file using GraphViz:
@@ -90,7 +110,8 @@ neato -Tpng webtree.dot -o webtree.png
 - `src/cli.rs`: Command-line interface using clap
 - `src/crawler.rs`: Core web crawling logic
 - `src/graph_export.rs`: GraphViz DOT export functionality
-- `src/lib.rs`: Module exports and common definitions
+- `src/error.rs`: Custom error types and error handling
+- `src/lib.rs`: Module exports, common definitions, and initialization
 
 ## License
 
@@ -99,3 +120,9 @@ MIT License
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request

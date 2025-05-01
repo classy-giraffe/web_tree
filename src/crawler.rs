@@ -13,9 +13,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use tracing::{debug, error, info, instrument, span, trace, warn, Level};
 use url::Url;
 
-use crate::BoxError;
+use crate::error::{WebTreeError, Result};
 
 /// Represents a node in the web graph
 ///
@@ -69,6 +70,10 @@ impl WebTree {
             .build()
             .unwrap_or_default();
 
+        debug!("Creating new WebTree crawler");
+        trace!(start_url = %start_url, max_depth = %max_depth, filter_count = %filter_list.len(), 
+            "WebTree initialization parameters");
+
         WebTree {
             start_url,
             filter_list,
@@ -91,10 +96,17 @@ impl WebTree {
     /// `true` if the URL should be followed, `false` otherwise
     pub fn should_follow(&self, url: &str) -> bool {
         if self.filter_list.is_empty() {
+            trace!(url = %url, "URL allowed (no filters active)");
             return true;
         }
 
-        self.filter_list.iter().any(|filter| url.contains(filter))
+        let should_follow = self.filter_list.iter().any(|filter| url.contains(filter));
+        if should_follow {
+            trace!(url = %url, "URL allowed by filter");
+        } else {
+            trace!(url = %url, "URL filtered out");
+        }
+        should_follow
     }
 
     /// Normalize a URL by removing fragments, default ports, and trailing slashes
@@ -106,15 +118,22 @@ impl WebTree {
     /// # Returns
     ///
     /// An Option containing the normalized URL string, or None if parsing failed
-    pub fn normalize_url(&self, url: &str) -> Option<String> {
-        let mut u = Url::parse(url).ok()?;
+    pub fn normalize_url(&self, url: &str) -> Result<String> {
+        trace!(url = %url, "Normalizing URL");
+        
+        let mut u = Url::parse(url).map_err(WebTreeError::UrlError)?;
         u.set_fragment(None);
+        
         if (u.scheme() == "http" && u.port_or_known_default() == Some(80))
             || (u.scheme() == "https" && u.port_or_known_default() == Some(443))
         {
             let _ = u.set_port(None);
         }
-        Some(u.as_str().trim_end_matches('/').to_string())
+        
+        let normalized = u.as_str().trim_end_matches('/').to_string();
+        trace!(original = %url, normalized = %normalized, "URL normalized");
+        
+        Ok(normalized)
     }
 
     /// Extract and normalize links from HTML content
@@ -128,26 +147,60 @@ impl WebTree {
     ///
     /// A vector of normalized URLs found in the HTML
     pub fn extract_links(&self, html: &str, base_url: &Url) -> Vec<String> {
+        let span = span!(Level::DEBUG, "extract_links", base_url = %base_url);
+        let _enter = span.enter();
+        
         let document = Html::parse_document(html);
-        let selector = Selector::parse("a[href]").unwrap();
+        let selector = match Selector::parse("a[href]") {
+            Ok(s) => s,
+            Err(e) => {
+                error!(error = %e, "Failed to parse selector");
+                return Vec::new();
+            }
+        };
 
-        document
+        let links: Vec<String> = document
             .select(&selector)
             .filter_map(|element| {
                 let href = element.value().attr("href")?;
-                let full = base_url.join(href).ok()?.to_string();
-                self.normalize_url(&full)
+                
+                // Resolve the URL relative to the base URL
+                let full_url = match base_url.join(href) {
+                    Ok(url) => url.to_string(),
+                    Err(e) => {
+                        debug!(href = %href, error = %e, "Failed to join URL");
+                        return None;
+                    }
+                };
+                
+                // Normalize the URL
+                let normalized = match self.normalize_url(&full_url) {
+                    Ok(url) => url,
+                    Err(e) => {
+                        debug!(url = %full_url, error = %e, "Failed to normalize URL");
+                        return None;
+                    }
+                };
+                
+                // Check if we should follow this link
+                if self.should_follow(&normalized) {
+                    Some(normalized)
+                } else {
+                    None
+                }
             })
-            .filter(|url| self.should_follow(url))
-            .collect()
+            .collect();
+            
+        debug!(link_count = links.len(), "Extracted links from page");
+        links
     }
 
     /// Print a text representation of the crawled tree to the console
     pub fn print_tree(&self) {
-        println!("\n--- WebTree Results ---");
-        println!("Total nodes: {}", self.graph.node_count());
-        println!("Total edges: {}", self.graph.edge_count());
+        info!("\n--- WebTree Results ---");
+        info!(nodes = self.graph.node_count(), edges = self.graph.edge_count(), "Crawl statistics");
 
+        // Find the starting node
         if let Some(&start_idx) = self.url_to_node.get(&self.start_url) {
             self.print_node(start_idx, 0);
         }
@@ -168,6 +221,7 @@ impl WebTree {
             node.depth
         );
 
+        // Print children
         for neighbor in self.graph.neighbors(idx) {
             self.print_node(neighbor, indent + 1);
         }
@@ -177,15 +231,29 @@ impl WebTree {
     ///
     /// # Arguments
     ///
-    /// * `crawler` - An `Arc<Mutex<WebTree>>` for shared access across tasks
+    /// * `crawler` - An Arc<Mutex<WebTree>> for shared access across tasks
     ///
     /// # Returns
     ///
     /// Result indicating success or an error that occurred during crawling
-    pub async fn crawl_concurrent(crawler: Arc<Mutex<Self>>) -> Result<(), BoxError> {
-        let start_url = { crawler.lock().await.start_url.clone() };
+    pub async fn crawl_concurrent(crawler: Arc<Mutex<Self>>) -> Result<()> {
+        let start_url = {
+            let web_tree = crawler.lock().await;
+            info!(url = %web_tree.start_url, "Starting concurrent crawl");
+            web_tree.start_url.clone()
+        };
+        
         // Kick off recursive concurrent crawl
-        WebTree::crawl_url_concurrent(crawler.clone(), start_url, 0, None).await
+        WebTree::crawl_url_concurrent(crawler.clone(), start_url, 0, None).await?;
+        
+        let stats = {
+            let web_tree = crawler.lock().await;
+            (web_tree.graph.node_count(), web_tree.graph.edge_count(), web_tree.visited.len())
+        };
+        
+        info!(nodes = stats.0, edges = stats.1, visited = stats.2, "Crawl completed");
+        
+        Ok(())
     }
 
     /// Recursively crawl a URL and its links concurrently
@@ -200,23 +268,37 @@ impl WebTree {
     /// # Returns
     ///
     /// Result indicating success or an error that occurred during crawling
+    #[instrument(skip(crawler, parent_idx), fields(url = %url, depth = depth))]
     async fn crawl_url_concurrent(
         crawler: Arc<Mutex<WebTree>>,
         url: String,
         depth: usize,
         parent_idx: Option<NodeIndex>,
-    ) -> Result<(), BoxError> {
+    ) -> Result<()> {
+        // 1) Normalize & register under lock
         let (normalized, current_idx) = {
             let mut guard = crawler.lock().await;
+            
             let norm = match guard.normalize_url(&url) {
-                Some(u) => u,
-                None => return Ok(()),
+                Ok(u) => u,
+                Err(e) => {
+                    warn!(error = %e, "Skipping invalid URL");
+                    return Ok(());
+                }
             };
-            if depth > guard.max_depth || guard.visited.contains(&norm) {
+            
+            if depth > guard.max_depth {
+                debug!("Reached maximum depth, not crawling further");
                 return Ok(());
             }
+            
+            if guard.visited.contains(&norm) {
+                trace!("Already visited, skipping");
+                return Ok(());
+            }
+            
             guard.visited.insert(norm.clone());
-            println!("Crawling: {} (depth: {})", norm, depth);
+            debug!(url = %norm, depth = depth, "Crawling page");
 
             let idx = match guard.url_to_node.get(&norm) {
                 Some(&i) => i,
@@ -229,38 +311,61 @@ impl WebTree {
                     i
                 }
             };
+            
             if let Some(parent) = parent_idx {
                 guard.graph.add_edge(parent, idx, ());
+                trace!(from = %guard.graph[parent].url, to = %norm, "Adding edge");
             }
+            
             (norm, idx)
         };
 
-        let client =  crawler.lock().await.client.clone();
-
+        // 2) Fetch & parse outside lock
+        let client = { crawler.lock().await.client.clone() };
+        
+        debug!(url = %normalized, "Sending HTTP request");
         let resp = match client.get(&normalized).send().await {
-            Ok(r) if r.status().is_success() => r,
+            Ok(r) if r.status().is_success() => {
+                debug!(status = %r.status(), "Received successful response");
+                r
+            },
             Ok(r) => {
-                eprintln!("Non-200 from {}: {}", normalized, r.status());
-                return Ok(());
+                warn!(status = %r.status(), "Received non-200 response");
+                return Err(WebTreeError::CrawlError { 
+                    url: normalized, 
+                    message: format!("Non-200 status: {}", r.status()) 
+                });
             }
             Err(e) => {
-                eprintln!("Error fetching {}: {}", normalized, e);
-                return Ok(());
+                warn!(error = %e, "Request failed");
+                return Err(WebTreeError::CrawlError { 
+                    url: normalized.clone(), 
+                    message: format!("Request error: {}", e) 
+                });
             }
         };
-
+        
         let html = match resp.text().await {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("Error reading body {}: {}", normalized, e);
-                return Ok(());
+                warn!(error = %e, "Failed to read response body");
+                return Err(WebTreeError::CrawlError { 
+                    url: normalized.clone(), 
+                    message: format!("Failed to read response body: {}", e) 
+                });
             }
         };
-
-        let base = Url::parse(&normalized)?;
-
-        let links = crawler.lock().await.extract_links(&html, &base);
         
+        let base = match Url::parse(&normalized) {
+            Ok(url) => url,
+            Err(e) => return Err(WebTreeError::UrlError(e)),
+        };
+
+        // 3) Extract links 
+        let links = { crawler.lock().await.extract_links(&html, &base) };
+        debug!(link_count = links.len(), "Found links on page");
+
+        // 4) Fan-out all child crawls in parallel
         let mut tasks = FuturesUnordered::new();
         for link in links {
             let crawler2 = crawler.clone();
@@ -270,8 +375,12 @@ impl WebTree {
             });
         }
 
+        // 5) Drive them to completion
         while let Some(child_result) = tasks.next().await {
-            child_result?;
+            if let Err(e) = child_result {
+                // Log but don't propagate child crawl errors to avoid failing the entire crawl
+                warn!(error = %e, "Error in child crawl");
+            }
         }
 
         Ok(())

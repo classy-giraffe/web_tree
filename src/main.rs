@@ -6,20 +6,24 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use clap::Parser;
+use tracing::{info, debug};
 
 use web_tree::cli::Cli;
 use web_tree::crawler::WebTree;
-use web_tree::BoxError;
+use web_tree::Result;
 
 /// Main entry point for the web crawler application
 ///
 /// Parses command-line arguments, initializes the crawler,
 /// performs the crawl, and exports the result to a GraphViz DOT file.
 #[tokio::main]
-async fn main() -> Result<(), BoxError> {
+async fn main() -> Result<()> {
     // Parse command line arguments using clap
     let cli = Cli::parse();
-
+    
+    // Initialize tracing and error handling with the provided log level
+    web_tree::init(cli.log_level.as_deref())?;
+    
     let start_url = cli.url;
     let max_depth = cli.depth;
     let output_file = cli.output;
@@ -27,20 +31,23 @@ async fn main() -> Result<(), BoxError> {
         .map(|f| f.split(',').map(|s| s.to_string()).collect())
         .unwrap_or_else(Vec::new);
 
-    println!("Starting WebTree crawler");
-    println!("Root URL: {}", start_url);
-    println!("Output file: {}", output_file);
+    info!("Starting WebTree crawler");
+    info!(url = %start_url, depth = max_depth, "Crawler configuration");
+    debug!(filters = ?filter_list, output = %output_file, "Additional settings");
 
     let crawler = Arc::new(Mutex::new(WebTree::new(
         start_url.clone(),
         filter_list,
         max_depth,
     )));
+    
+    // Run the crawler
     WebTree::crawl_concurrent(crawler.clone()).await?;
+    
+    // Print results and export graph
     crawler.lock().await.print_tree();
-
-    // Export the graph to a DOT file
     crawler.lock().await.export_dot(&output_file)?;
 
+    info!("Crawl completed successfully");
     Ok(())
 }
