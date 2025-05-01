@@ -27,7 +27,7 @@ WebTree is a command-line tool that crawls websites starting from a specified UR
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/web_tree.git
+git clone https://github.com/classy-giraffe/web_tree.git
 cd web_tree
 
 # Build the project
@@ -38,7 +38,7 @@ cargo build --release
 
 ## Usage
 
-Basic usage with default settings (starting URL: https://google.com, depth: 2):
+Basic usage with default settings (starting URL: https://google.com, depth: 15):
 
 ```bash
 web_tree
@@ -50,10 +50,16 @@ Specify a custom URL to crawl:
 web_tree --url https://example.com
 ```
 
+Set the log level (trace, debug, info, warn, error):
+
+```bash
+web_tree debug --url https://example.com
+```
+
 Configure crawl depth and output file:
 
 ```bash
-web_tree --url https://example.com --depth 3 --output site-map.dot
+web_tree info --url https://example.com --depth 3 --output site-map.dot
 ```
 
 Filter crawling to specific domains:
@@ -62,32 +68,21 @@ Filter crawling to specific domains:
 web_tree --url https://example.com --filters example.com,api.example.com
 ```
 
+Combine all options:
+
+```bash
+web_tree debug --url https://example.com --depth 3 --output site-map.dot --filters example.com,api.example.com
+```
+
 ### Command-line Options
 
 | Option | Short | Description | Default |
 |--------|-------|-------------|---------|
+| `LOG_LEVEL` | - | Optional log level (trace, debug, info, warn, error) | info |
 | `--url` | `-u` | Starting URL to crawl | https://google.com/ |
-| `--depth` | `-d` | Maximum crawl depth | 2 |
+| `--depth` | `-d` | Maximum crawl depth | 15 |
 | `--output` | `-o` | Output file path for GraphViz DOT file | webtree.dot |
 | `--filters` | `-f` | Comma-separated list of domain filters | (none) |
-
-### Logging Control
-
-WebTree uses the `tracing` crate for structured logging. You can control the log level using the `RUST_LOG` environment variable:
-
-```bash
-# Show only info and higher level logs
-RUST_LOG=info web_tree
-
-# Show debug logs
-RUST_LOG=debug web_tree
-
-# Show all logs including trace level
-RUST_LOG=trace web_tree
-
-# Target specific modules
-RUST_LOG=web_tree=debug,web_tree::crawler=trace web_tree
-```
 
 ## Visualizing the Output
 
