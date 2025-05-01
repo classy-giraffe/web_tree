@@ -34,10 +34,8 @@ pub type BoxError = Box<dyn Error + Send + Sync>;
 ///
 /// * `log_level` - Optional log level string (trace, debug, info, warn, error)
 pub fn init(log_level: Option<&str>) -> color_eyre::Result<()> {
-    // Initialize color-eyre for pretty error reporting
     color_eyre::install()?;
     
-    // Initialize tracing with the provided log level or from environment
     let filter = if let Some(level) = log_level {
         match level.to_lowercase().as_str() {
             "trace" => EnvFilter::default().add_directive(LevelFilter::TRACE.into()),
@@ -46,18 +44,17 @@ pub fn init(log_level: Option<&str>) -> color_eyre::Result<()> {
             "warn" => EnvFilter::default().add_directive(LevelFilter::WARN.into()),
             "error" => EnvFilter::default().add_directive(LevelFilter::ERROR.into()),
             _ => {
-                // If unrecognized level, fall back to info but also check RUST_LOG
                 EnvFilter::from_default_env()
                     .add_directive(LevelFilter::INFO.into())
             }
         }
     } else {
-        // No level provided, check RUST_LOG environment or default to info
         EnvFilter::from_default_env()
             .add_directive(LevelFilter::INFO.into())
     };
     
     tracing_subscriber::fmt()
+        .pretty()
         .with_env_filter(filter)
         .init();
         
@@ -66,5 +63,4 @@ pub fn init(log_level: Option<&str>) -> color_eyre::Result<()> {
     Ok(())
 }
 
-// Re-export types for convenience
 pub use error::{WebTreeError, Result};

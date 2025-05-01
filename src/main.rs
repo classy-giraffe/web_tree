@@ -18,10 +18,8 @@ use web_tree::Result;
 /// performs the crawl, and exports the result to a GraphViz DOT file.
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Parse command line arguments using clap
     let cli = Cli::parse();
     
-    // Initialize tracing and error handling with the provided log level
     web_tree::init(cli.log_level.as_deref())?;
     
     let start_url = cli.url;
@@ -41,10 +39,8 @@ async fn main() -> Result<()> {
         max_depth,
     )));
     
-    // Run the crawler
     WebTree::crawl_concurrent(crawler.clone()).await?;
     
-    // Print results and export graph
     crawler.lock().await.print_tree();
     crawler.lock().await.export_dot(&output_file)?;
 

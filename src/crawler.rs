@@ -319,7 +319,7 @@ impl WebTree {
         };
 
         // 2) Fetch & parse outside lock
-        let client = { crawler.lock().await.client.clone() };
+        let client = crawler.lock().await.client.clone();
         
         debug!(url = %normalized, "Sending HTTP request");
         let resp = match client.get(&normalized).send().await {
@@ -363,7 +363,7 @@ impl WebTree {
         let links = { crawler.lock().await.extract_links(&html, &base) };
         debug!(link_count = links.len(), "Found links on page");
 
-        // 4) Fan-out all child crawls in parallel
+        // 4) Run crawls in parallel
         let mut tasks = FuturesUnordered::new();
         for link in links {
             let crawler2 = crawler.clone();
